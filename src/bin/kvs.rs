@@ -39,7 +39,7 @@ fn main() {
         return;
     }
 
-    let mut kv_store = KvStore::new();
+    let mut kv_store: KvStore = Default::default();
 
     match matches.subcommand() {
         ("set", Some(sub_m)) => {
@@ -48,14 +48,14 @@ fn main() {
         },
         ("get", Some(sub_m)) => {
             let key = sub_m.value_of("get_arg").unwrap();
-            let value = kv_store.get(key.to_owned());
+            let _value = kv_store.get(key.to_owned());
         },
         ("rm", Some(sub_m)) => {
             let key = sub_m.value_of("rm_arg").unwrap();
-            let value = kv_store.remove(key.to_owned());
+            kv_store.remove(key.to_owned());
         },
         _ => {
-            panic!(format!("{}", matches.usage()));
+            panic!(matches.usage().to_string());
         }
     }
 }

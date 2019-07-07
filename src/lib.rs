@@ -5,6 +5,7 @@ use std::collections::HashMap;
 ///
 /// core data structure for saving key/value pair
 ///
+#[derive(Default)]
 pub struct KvStore {
     data: HashMap<String, String>
 }
@@ -37,7 +38,7 @@ impl KvStore {
     /// get value by key
     ///
     pub fn get(&self, k: String) -> Option<String> {
-        self.data.get(&k).map(|v| String::from(v))
+        self.data.get(&k).map(String::from)
     }
 
     ///
