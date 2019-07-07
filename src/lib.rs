@@ -7,14 +7,13 @@ use std::collections::HashMap;
 ///
 #[derive(Default)]
 pub struct KvStore {
-    data: HashMap<String, String>
+    data: HashMap<String, String>,
 }
 
 ///
 /// implementation of KvStore
 ///
 impl KvStore {
-
     ///
     /// initialize KvStore
     ///
@@ -24,7 +23,9 @@ impl KvStore {
     /// ```
     ///
     pub fn new() -> KvStore {
-        KvStore { data: HashMap::new() }
+        KvStore {
+            data: HashMap::new(),
+        }
     }
 
     ///
