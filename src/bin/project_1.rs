@@ -1,9 +1,10 @@
 extern crate clap;
 
 use clap::{App, Arg, SubCommand};
-use kvs::{KvStore, KvError, Result};
+use kvs::KvStore;
 
-fn main() -> Result<()> {
+fn main() {
+    // TODO: extension 1: structopt
     let matches = App::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
         .author(env!("CARGO_PKG_AUTHORS"))
@@ -37,7 +38,7 @@ fn main() -> Result<()> {
 
     if matches.is_present("version") {
         println!("{}", env!("CARGO_PKG_VERSION"));
-        return Ok(()); //FIXME
+        return;
     }
 
     let mut kv_store: KvStore = Default::default();
@@ -59,6 +60,4 @@ fn main() -> Result<()> {
             panic!(matches.usage().to_string());
         }
     }
-
-    Ok(())
 }
