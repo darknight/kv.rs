@@ -1,12 +1,13 @@
 #![deny(missing_docs)]
 //! KvStore library
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::io;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::result;
 use std::error;
+use std::fs;
 use std::fs::{File, OpenOptions};
 
 use serde::{Serialize, Deserialize};
@@ -41,7 +42,7 @@ impl From<serde_json::Error> for KvError {
 pub type Result<T> = result::Result<T, KvError>;
 
 /// default log path
-const LOG_PATH: &'static str = "./log/data.log";
+const LOG_FILE: &'static str = "data.log";
 
 #[derive(Debug, Serialize, Deserialize)]
 enum LogEntry {
@@ -62,10 +63,13 @@ pub struct KvStore {
 
 impl Default for KvStore {
     fn default() -> Self {
-        KvStore {
-            data: HashMap::new(),
-            log_file: File::open(LOG_PATH).expect("Fail to create default KvStore"),
-        }
+        KvStore::open(LOG_FILE).expect("Fail to create default KvStore")
+    }
+}
+
+impl Drop for KvStore {
+    fn drop(&mut self) {
+        self.log_file.flush().expect("Fail to drop KvStore before flush data")
     }
 }
 
@@ -84,6 +88,7 @@ impl KvStore {
             value: v.clone(),
         };
         serde_json::to_writer(&self.log_file, &entry)?;
+        self.log_file.write("\n".as_bytes())?;
         // set in-memory store
         self.data.insert(k, v);
         Ok(())
@@ -93,8 +98,7 @@ impl KvStore {
     /// get value by key
     ///
     pub fn get(&self, k: String) -> Result<Option<String>> {
-        self.data.get(&k).map(String::from);
-        Ok(None)
+        Ok(self.data.get(&k).map(String::from))
     }
 
     ///
@@ -115,17 +119,39 @@ impl KvStore {
     /// return initialized KvStore
     ///
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let p = Self::ensure_path(path.as_ref())?;
         let file = OpenOptions::new()
             .read(true)
             .append(true)
             .create(true)
-            .open(path)?;
+            .open(p)?;
         let mut kv_store = KvStore {
             data: HashMap::new(),
             log_file: file,
         };
         kv_store.load_data()?;
         Ok(kv_store)
+    }
+
+    ///
+    /// Prepare the file path
+    ///
+    fn ensure_path(path: &Path) -> Result<PathBuf> {
+        if path.is_file() {
+            if let Some(parent) = path.parent() {
+                if !parent.exists() {
+                    fs::create_dir_all(parent)?;
+                }
+            }
+            return Ok(path.to_path_buf());
+        }
+        else {
+            if !path.exists() {
+                fs::create_dir_all(path)?;
+            }
+            let new_path = path.join(LOG_FILE);
+            return Ok(new_path);
+        }
     }
 
     ///

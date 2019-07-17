@@ -2,6 +2,7 @@ extern crate clap;
 
 use clap::{App, Arg, SubCommand};
 use kvs::{KvStore, KvError, Result};
+use std::process::exit;
 
 fn main() -> Result<()> {
     let matches = App::new(env!("CARGO_PKG_NAME"))
@@ -41,6 +42,7 @@ fn main() -> Result<()> {
     }
 
     let mut kv_store: KvStore = Default::default();
+//    kv_store.dprint();
 
     match matches.subcommand() {
         ("set", Some(sub_m)) => {
@@ -49,11 +51,18 @@ fn main() -> Result<()> {
         }
         ("get", Some(sub_m)) => {
             let key = sub_m.value_of("get_arg").unwrap();
-            let _value = kv_store.get(key.to_owned());
+            let value = kv_store.get(key.to_owned())?;
+            match value {
+                Some(v) => println!("{}", v),
+                _ => println!("Key not found"),
+            };
         }
         ("rm", Some(sub_m)) => {
             let key = sub_m.value_of("rm_arg").unwrap();
-            kv_store.remove(key.to_owned());
+            if let Err(KvError::KeyNotFound) = kv_store.remove(key.to_owned()) {
+                println!("Key not found");
+                exit(1);
+            }
         }
         _ => {
             panic!(matches.usage().to_string());
