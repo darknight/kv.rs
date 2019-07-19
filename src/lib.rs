@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::io;
 use std::io::prelude::*;
-use std::io::BufReader;
+use std::io::{BufReader, SeekFrom};
 use std::result;
 use std::error;
 use std::fs;
@@ -57,8 +57,9 @@ enum LogEntry {
 /// core data structure for saving key/value pair
 ///
 pub struct KvStore {
-    data: HashMap<String, String>,
+    data: HashMap<String, u64>,
     log_file: File,
+    current_offset: u64,
 }
 
 impl Default for KvStore {
@@ -87,18 +88,33 @@ impl KvStore {
             key: k.clone(),
             value: v.clone(),
         };
-        serde_json::to_writer(&self.log_file, &entry)?;
-        self.log_file.write("\n".as_bytes())?;
-        // set in-memory store
-        self.data.insert(k, v);
+        let mut entry_str = serde_json::to_string(&entry)?;
+        entry_str.push_str("\n");
+        self.log_file.write(entry_str.as_bytes())?;
+        // set in-memory offset
+        self.data.insert(k, self.current_offset);
+        self.current_offset += entry_str.as_bytes().len() as u64;
         Ok(())
     }
 
     ///
     /// get value by key
     ///
-    pub fn get(&self, k: String) -> Result<Option<String>> {
-        Ok(self.data.get(&k).map(String::from))
+    pub fn get(&mut self, k: String) -> Result<Option<String>> {
+        match self.data.get(&k) {
+            None => Ok(None),
+            Some(&offset) => {
+                self.log_file.seek(SeekFrom::Start(offset))?;
+                let mut buf_reader = BufReader::new(&self.log_file);
+                let mut raw = String::new();
+                buf_reader.read_line(&mut raw)?;
+                if let LogEntry::Set { key, value} = serde_json::from_str(raw.as_str())? {
+                    Ok(Some(value))
+                } else {
+                    Err(KvError::KeyNotFound)
+                }
+            }
+        }
     }
 
     ///
@@ -109,7 +125,11 @@ impl KvStore {
             None => Err(KvError::KeyNotFound),
             Some(_) => {
                 let entry = LogEntry::Remove(k.clone());
-                serde_json::to_writer(&self.log_file, &entry)?;
+                let mut entry_str = serde_json::to_string(&entry)?;
+                entry_str.push_str("\n");
+                self.log_file.write(entry_str.as_bytes())?;
+                // set in-memory offset
+                self.current_offset += entry_str.as_bytes().len() as u64;
                 Ok(())
             }
         }
@@ -128,6 +148,7 @@ impl KvStore {
         let mut kv_store = KvStore {
             data: HashMap::new(),
             log_file: file,
+            current_offset: 0u64,
         };
         kv_store.load_data()?;
         Ok(kv_store)
@@ -163,9 +184,12 @@ impl KvStore {
             let row = line?;
             let entry: LogEntry = serde_json::from_str(row.as_str())?;
             match entry {
-                LogEntry::Set {key, value} => self.data.insert(key, value),
-                LogEntry::Remove(key) => self.data.remove(&key),
+                LogEntry::Set {key, value} =>
+                    self.data.insert(key, self.current_offset),
+                LogEntry::Remove(key) =>
+                    self.data.remove(&key),
             };
+            self.current_offset += row.as_bytes().len() as u64 + 1; // 1 for newline
         }
         Ok(())
     }
