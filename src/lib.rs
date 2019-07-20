@@ -11,6 +11,7 @@ use std::fs;
 use std::fs::{File, OpenOptions};
 
 use serde::{Serialize, Deserialize};
+use std::ffi::OsString;
 
 ///
 /// define customized error type
@@ -24,6 +25,8 @@ pub enum KvError {
     SerdeJsonError(serde_json::Error),
     /// key not found error
     KeyNotFound,
+    /// deal with Path error
+    DirPathExpected,
 }
 
 impl From<io::Error> for KvError {
@@ -41,8 +44,10 @@ impl From<serde_json::Error> for KvError {
 /// alias
 pub type Result<T> = result::Result<T, KvError>;
 
-/// default log path
+/// default log file
 const LOG_FILE: &'static str = "data.log";
+/// max file size (in bytes) before executing compaction or splitting into segments
+const MAX_FILE_BYTES: u64 = 1024 * 1024 ;
 
 #[derive(Debug, Serialize, Deserialize)]
 enum LogEntry {
@@ -58,13 +63,14 @@ enum LogEntry {
 ///
 pub struct KvStore {
     data: HashMap<String, u64>,
+    path_buf: PathBuf,
     log_file: File,
     current_offset: u64,
 }
 
 impl Default for KvStore {
     fn default() -> Self {
-        KvStore::open(LOG_FILE).expect("Fail to create default KvStore")
+        KvStore::open(".").expect("Fail to create default KvStore")
     }
 }
 
@@ -83,6 +89,14 @@ impl KvStore {
     /// save key/value pair
     ///
     pub fn set(&mut self, k: String, v: String) -> Result<()> {
+        self.check_and_do_compaction()?;
+        self.set_internal(k, v)
+    }
+
+    ///
+    /// internal set without compaction
+    ///
+    pub fn set_internal(&mut self, k: String, v: String) -> Result<()> {
         // create log entry, serialize, write to log file
         let entry = LogEntry::Set {
             key: k.clone(),
@@ -121,6 +135,14 @@ impl KvStore {
     /// remove key/value pair from KvStore
     ///
     pub fn remove(&mut self, k: String) -> Result<()> {
+        self.check_and_do_compaction()?;
+        self.remove_internal(k)
+    }
+
+    ///
+    /// internal remove without compaction
+    ///
+    fn remove_internal(&mut self, k: String) -> Result<()> {
         match self.data.remove(&k) {
             None => Err(KvError::KeyNotFound),
             Some(_) => {
@@ -139,14 +161,18 @@ impl KvStore {
     /// return initialized KvStore
     ///
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let p = Self::ensure_path(path.as_ref())?;
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .open(p)?;
+        let p = Self::ensure_path(path.as_ref(), LOG_FILE)?;
+        Self::open_internal(p)
+    }
+
+    ///
+    /// pass in valid file path
+    ///
+    fn open_internal(file_path: PathBuf) -> Result<Self> {
+        let file = Self::open_file(&file_path)?;
         let mut kv_store = KvStore {
             data: HashMap::new(),
+            path_buf: file_path,
             log_file: file,
             current_offset: 0u64,
         };
@@ -157,22 +183,24 @@ impl KvStore {
     ///
     /// Prepare the file path
     ///
-    fn ensure_path(path: &Path) -> Result<PathBuf> {
-        if path.is_file() {
-            if let Some(parent) = path.parent() {
-                if !parent.exists() {
-                    fs::create_dir_all(parent)?;
-                }
-            }
-            return Ok(path.to_path_buf());
+    fn ensure_path(path: &Path, file_name: &str) -> Result<PathBuf> {
+        if path.exists() && path.is_file() {
+            return Err(KvError::DirPathExpected);
         }
-        else {
-            if !path.exists() {
-                fs::create_dir_all(path)?;
-            }
-            let new_path = path.join(LOG_FILE);
-            return Ok(new_path);
-        }
+        fs::create_dir_all(path)?;
+        let file_path = path.join(file_name);
+        Ok(file_path)
+    }
+
+    ///
+    /// Open file with Read + Append + Create
+    ///
+    fn open_file<P: AsRef<Path>>(path: P) -> io::Result<File> { // FIXME: convert to local Result
+        OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(path.as_ref())
     }
 
     ///
@@ -200,5 +228,44 @@ impl KvStore {
     pub fn dprint(&self) {
         println!("KvStore =>");
         println!("{:?}", self.data);
+    }
+
+    ///
+    /// check file size and do compaction if file is too large
+    /// the strategy currently is blocking set & remove until compaction is completed
+    /// action:
+    /// 1. create temp KvStore with opening TEMP_LOG_FILE
+    /// 2. dump data in current KvStore to temp KvStore
+    /// 3. drop temp KvStore
+    /// 4. overwrite original file with temp file by renaming
+    /// 5. create new file handle for the new file, assign it to current KvStore
+    /// 6. return
+    ///
+    /// TODO: handle stale temp file if compaction fails in the middle
+    ///
+    fn check_and_do_compaction(&mut self) -> Result<()> {
+        let metadata = self.log_file.metadata()?;
+        if metadata.len() < MAX_FILE_BYTES {
+            return Ok(());
+        }
+        // path_buf is guaranteed as a file
+        let file_name = self.path_buf.file_name().unwrap();
+        let mut tmp_file_name = OsString::new();
+        tmp_file_name.push(file_name);
+        tmp_file_name.push(".tmp");
+        let tmp_file_path = self.path_buf.clone().parent().unwrap().join(tmp_file_name);
+
+        let mut temp_kv_store = KvStore::open_internal(tmp_file_path.clone())?;
+        let keys: Vec<String> = self.data.keys().map(|k| k.to_string()).collect();
+        for key in keys {
+            let value_opt = self.get(key.to_string())?;
+            let value = value_opt
+                .expect(&format!("Key {:?} not found when doing compaction", key));
+            temp_kv_store.set_internal(key.to_string(), value)?;
+        }
+        drop(temp_kv_store);
+        fs::rename(tmp_file_path.as_path(), self.path_buf.as_path())?;
+        self.log_file = Self::open_file(self.path_buf.as_path())?;
+        Ok(())
     }
 }
