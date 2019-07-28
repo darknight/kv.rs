@@ -8,6 +8,8 @@ use kvs::{KvStore, KvError, Result};
 use std::process::exit;
 use slog::*;
 use std::net::{SocketAddr, TcpListener};
+use std::io::Read;
+use kvs::proto::Proto;
 
 ///
 /// slog doc: https://docs.rs/slog/2.5.2/slog/
@@ -58,8 +60,12 @@ fn main() -> Result<()> {
     let listener = TcpListener::bind(addr)?;
     loop {
         match listener.accept() {
-            Ok((stream, peer_addr)) => {
+            Ok((mut stream, peer_addr)) => {
                 debug!(logger, "accept remote stream from {}", peer_addr);
+                let mut raw = Vec::new();
+                stream.read_to_end(&mut raw);
+                let proto: Proto = serde_json::from_slice(raw.as_slice())?;
+                debug!(logger, "received command: `{:?}`", proto);
             },
             Err(e) => error!(logger, "couldn't get remote stream: {:?}", e),
         }

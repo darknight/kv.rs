@@ -14,6 +14,11 @@ use serde::{Serialize, Deserialize};
 use std::ffi::OsString;
 use std::error::Error;
 
+/// redis proto implementation (in process)
+mod resp;
+/// simple command, will be replaced in future by resp
+pub mod proto;
+
 ///
 /// define customized error type
 /// refer to this awesome article: https://blog.burntsushi.net/rust-error-handling/

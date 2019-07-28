@@ -32,6 +32,8 @@ name = "kvs-server"
 test = false
 doctest = false
 
+#[features]
+
 [dependencies]
 clap = "2.33.0"
 serde = "1.0.*"
