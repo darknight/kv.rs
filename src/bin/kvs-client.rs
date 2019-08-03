@@ -3,8 +3,8 @@ extern crate clap;
 use clap::{App, Arg, SubCommand};
 use std::process::exit;
 use std::net::{TcpStream, SocketAddr};
-use kvs::proto::Proto;
-use std::io::Write;
+use kvs::proto::{ReqProto, RespProto};
+use std::io::{Write, Read};
 
 use kvs::engine::{KvError, Result, KvsEngine};
 use kvs::kvs_engine::KvStore;
@@ -70,19 +70,19 @@ fn main() -> Result<()> {
     match matches.subcommand() {
         ("set", Some(sub_m)) => {
             let input: Vec<&str> = sub_m.values_of("set_arg").unwrap().collect();
-            let proto = Proto::Set(input[0].to_string(), input[1].to_string());
+            let proto = ReqProto::Set(input[0].to_string(), input[1].to_string());
             let addr: SocketAddr = matches.value_of("addr").unwrap_or("127.0.0.1:4000").parse()?;
             send_command(proto, addr)?;
         }
         ("get", Some(sub_m)) => {
             let key = sub_m.value_of("get_arg").unwrap();
-            let proto = Proto::Get(key.to_string());
+            let proto = ReqProto::Get(key.to_string());
             let addr: SocketAddr = matches.value_of("addr").unwrap_or("127.0.0.1:4000").parse()?;
             send_command(proto, addr)?;
         }
         ("rm", Some(sub_m)) => {
             let key = sub_m.value_of("rm_arg").unwrap();
-            let proto = Proto::Remove(key.to_string());
+            let proto = ReqProto::Remove(key.to_string());
             let addr: SocketAddr = matches.value_of("addr").unwrap_or("127.0.0.1:4000").parse()?;
             send_command(proto, addr)?;
         }
@@ -94,10 +94,15 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn send_command(proto: Proto, addr: SocketAddr) -> Result<()> {
+fn send_command(proto: ReqProto, addr: SocketAddr) -> Result<()> {
     let raw = serde_json::to_string(&proto)?;
     let mut stream = TcpStream::connect(addr)?;
     stream.write(raw.as_bytes())?;
     stream.flush()?;
+
+    let mut resp = Vec::new();
+    stream.read_to_end(&mut resp);
+    let proto: RespProto = serde_json::from_slice(resp.as_slice())?;
+    eprintln!("got response: {:?}", proto);
     Ok(())
 }

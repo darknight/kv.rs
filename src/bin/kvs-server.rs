@@ -6,9 +6,10 @@ extern crate slog_term;
 use clap::{App, Arg, SubCommand};
 use std::process::exit;
 use slog::*;
-use std::net::{SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::io::Read;
-use kvs::proto::Proto;
+use std::io::Write;
+use kvs::proto::{ReqProto, RespProto};
 use kvs::engine::{KvError, Result, KvsEngine};
 use kvs::kvs_engine::KvStore;
 use kvs::sled_engine::SledStore;
@@ -49,7 +50,7 @@ fn main() -> Result<()> {
 
     if matches.is_present("version") {
         println!("{}", env!("CARGO_PKG_VERSION"));
-        return Ok(()); //FIXME
+        return Ok(());
     }
 
     info!(logger, "kvs-server {}", env!("CARGO_PKG_VERSION"));
@@ -59,6 +60,9 @@ fn main() -> Result<()> {
     let engine_name = matches.value_of("engine").unwrap_or("kvs");
     info!(logger, "storage engine `{}`, listen on `{}`...", engine_name, addr);
 
+    info!(logger, "initializing storage engine");
+    let mut engine = init_storage_engine(engine_name, &logger);
+
     let listener = TcpListener::bind(addr)?;
     loop {
         match listener.accept() {
@@ -66,12 +70,52 @@ fn main() -> Result<()> {
                 debug!(logger, "accept remote stream from {}", peer_addr);
                 let mut raw = Vec::new();
                 stream.read_to_end(&mut raw);
-                let proto: Proto = serde_json::from_slice(raw.as_slice())?;
+                let proto: ReqProto = serde_json::from_slice(raw.as_slice())?;
                 debug!(logger, "received command: `{:?}`", proto);
+                match proto {
+                    ReqProto::Get(key) => {
+                        let val_opt = engine.get(key)?;
+                        let resp = RespProto::OK(val_opt);
+                        send_response(&mut stream, resp)?;
+                    },
+                    ReqProto::Set(key, value) => {
+                        engine.set(key, value)?;
+                        let resp = RespProto::OK(None);
+                        send_response(&mut stream, resp)?;
+                    },
+                    ReqProto::Remove(key) => {
+                        engine.remove(key)?;
+                        let resp = RespProto::OK(None);
+                        send_response(&mut stream, resp)?;
+                    }
+                }
             },
             Err(e) => error!(logger, "couldn't get remote stream: {:?}", e),
         }
     }
+    Ok(())
+}
 
+fn init_storage_engine(engine_name: &str, logger: &Logger) -> Box<dyn KvsEngine> {
+    match engine_name {
+        "kvs" => {
+            let store = KvStore::default();
+            Box::new(store)
+        },
+        "sled" => {
+            let store = SledStore::default();
+            Box::new(store)
+        },
+        _ => {
+            error!(logger, "Unrecognized storage engine: `{}`", engine_name);
+            exit(1);
+        }
+    }
+}
+
+fn send_response(stream: &mut TcpStream, resp: RespProto) -> Result<()> {
+    let raw = serde_json::to_string(&resp)?;
+    stream.write(raw.as_bytes())?;
+    stream.flush()?;
     Ok(())
 }
