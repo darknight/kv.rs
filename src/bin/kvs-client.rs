@@ -1,11 +1,13 @@
 extern crate clap;
 
 use clap::{App, Arg, SubCommand};
-use kvs::{KvStore, KvError, Result};
 use std::process::exit;
 use std::net::{TcpStream, SocketAddr};
 use kvs::proto::Proto;
 use std::io::Write;
+
+use kvs::engine::{KvError, Result, KvsEngine};
+use kvs::kvs_engine::KvStore;
 
 fn main() -> Result<()> {
     let matches = App::new(env!("CARGO_PKG_NAME"))

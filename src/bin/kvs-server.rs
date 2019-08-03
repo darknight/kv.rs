@@ -4,12 +4,14 @@ extern crate slog;
 extern crate slog_term;
 
 use clap::{App, Arg, SubCommand};
-use kvs::{KvStore, KvError, Result};
 use std::process::exit;
 use slog::*;
 use std::net::{SocketAddr, TcpListener};
 use std::io::Read;
 use kvs::proto::Proto;
+use kvs::engine::{KvError, Result, KvsEngine};
+use kvs::kvs_engine::KvStore;
+use kvs::sled_engine::SledStore;
 
 ///
 /// slog doc: https://docs.rs/slog/2.5.2/slog/
@@ -54,8 +56,8 @@ fn main() -> Result<()> {
 
     let addr: SocketAddr = matches.value_of("addr").unwrap_or("127.0.0.1:4000").parse()?;
     // TODO: limit only kvs or sled, convert to enum
-    let engine = matches.value_of("engine").unwrap_or("kvs");
-    info!(logger, "storage engine `{}`, listen on `{}`...", engine, addr);
+    let engine_name = matches.value_of("engine").unwrap_or("kvs");
+    info!(logger, "storage engine `{}`, listen on `{}`...", engine_name, addr);
 
     let listener = TcpListener::bind(addr)?;
     loop {

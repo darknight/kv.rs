@@ -1,7 +1,9 @@
 extern crate clap;
 
 use clap::{App, Arg, SubCommand};
-use kvs::KvStore;
+
+use kvs::engine::{KvError, Result, KvsEngine};
+use kvs::kvs_engine::KvStore;
 
 fn main() {
     // TODO: extension 1: structopt
