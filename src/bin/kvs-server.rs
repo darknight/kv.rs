@@ -9,6 +9,8 @@ use slog::*;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::io::Read;
 use std::io::Write;
+use std::io::BufRead;
+use std::io::BufReader;
 use kvs::proto::{ReqProto, RespProto};
 use kvs::engine::{KvError, Result, KvsEngine};
 use kvs::kvs_engine::KvStore;
@@ -69,9 +71,10 @@ fn main() -> Result<()> {
             Ok((mut stream, peer_addr)) => {
                 debug!(logger, "accept remote stream from {}", peer_addr);
                 let mut raw = Vec::new();
-                stream.read_to_end(&mut raw);
+                let mut buf_stream = BufReader::new(&stream);
+                buf_stream.read_until(b'\n', &mut raw);
                 let proto: ReqProto = serde_json::from_slice(raw.as_slice())?;
-                debug!(logger, "received command: `{:?}`", proto);
+                debug!(logger, "received command => `{:?}`", proto);
                 match proto {
                     ReqProto::Get(key) => {
                         let val_opt = engine.get(key)?;
@@ -80,13 +83,15 @@ fn main() -> Result<()> {
                     },
                     ReqProto::Set(key, value) => {
                         engine.set(key, value)?;
-                        let resp = RespProto::OK(None);
-                        send_response(&mut stream, resp)?;
                     },
                     ReqProto::Remove(key) => {
-                        engine.remove(key)?;
-                        let resp = RespProto::OK(None);
-                        send_response(&mut stream, resp)?;
+                        match engine.remove(key) {
+                            Err(KvError::KeyNotFound) => {
+                                let resp = RespProto::Error("Key not found".to_string());
+                                send_response(&mut stream, resp)?;
+                            },
+                            _ => {}
+                        }
                     }
                 }
             },

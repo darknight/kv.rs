@@ -40,7 +40,7 @@ fn main() -> Result<()> {
 
     if matches.is_present("version") {
         println!("{}", env!("CARGO_PKG_VERSION"));
-        return Ok(()); //FIXME
+        return Ok(());
     }
 
     let mut kv_store: KvStore = Default::default();

@@ -15,8 +15,14 @@ pub struct SledStore {
 
 impl Default for SledStore {
     fn default() -> Self {
-        let db = Db::start_default(DEFAULT_PATH).expect("Couldn't create sled Db");
-        SledStore { db }
+        SledStore::open(DEFAULT_PATH).expect("Couldn't create sled Db")
+    }
+}
+
+// TODO: not called when receiving `kill` signal, should call drop and flush the IO
+impl Drop for SledStore {
+    fn drop(&mut self) {
+        self.db.flush().expect("Fail to drop SledStore before flush data");
     }
 }
 
@@ -73,6 +79,13 @@ impl KvsEngine for SledStore {
     }
 
     fn remove(&mut self, key: String) -> Result<()> {
-        unimplemented!()
+        match self.db.del(key) {
+            Ok(Some(_)) => {
+                self.db.flush(); // FIXME: temporarily call flush here to make test pass
+                Ok(())
+            },
+            Ok(None) => Err(KvError::KeyNotFound),
+            Err(err) => Err(KvError::SledError(err))
+        }
     }
 }

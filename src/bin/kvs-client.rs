@@ -64,26 +64,26 @@ fn main() -> Result<()> {
 
     if matches.is_present("version") {
         println!("{}", env!("CARGO_PKG_VERSION"));
-        return Ok(()); //FIXME
+        return Ok(());
     }
 
     match matches.subcommand() {
         ("set", Some(sub_m)) => {
             let input: Vec<&str> = sub_m.values_of("set_arg").unwrap().collect();
             let proto = ReqProto::Set(input[0].to_string(), input[1].to_string());
-            let addr: SocketAddr = matches.value_of("addr").unwrap_or("127.0.0.1:4000").parse()?;
+            let addr: SocketAddr = sub_m.value_of("addr").unwrap_or("127.0.0.1:4000").parse()?;
             send_command(proto, addr)?;
         }
         ("get", Some(sub_m)) => {
             let key = sub_m.value_of("get_arg").unwrap();
             let proto = ReqProto::Get(key.to_string());
-            let addr: SocketAddr = matches.value_of("addr").unwrap_or("127.0.0.1:4000").parse()?;
+            let addr: SocketAddr = sub_m.value_of("addr").unwrap_or("127.0.0.1:4000").parse()?;
             send_command(proto, addr)?;
         }
         ("rm", Some(sub_m)) => {
             let key = sub_m.value_of("rm_arg").unwrap();
             let proto = ReqProto::Remove(key.to_string());
-            let addr: SocketAddr = matches.value_of("addr").unwrap_or("127.0.0.1:4000").parse()?;
+            let addr: SocketAddr = sub_m.value_of("addr").unwrap_or("127.0.0.1:4000").parse()?;
             send_command(proto, addr)?;
         }
         _ => {
@@ -95,14 +95,32 @@ fn main() -> Result<()> {
 }
 
 fn send_command(proto: ReqProto, addr: SocketAddr) -> Result<()> {
-    let raw = serde_json::to_string(&proto)?;
+    let mut raw = serde_json::to_string(&proto)?;
+    raw.push('\n');
+
     let mut stream = TcpStream::connect(addr)?;
+    stream.set_nodelay(true)?;
     stream.write(raw.as_bytes())?;
     stream.flush()?;
 
     let mut resp = Vec::new();
     stream.read_to_end(&mut resp);
+    if resp.is_empty() {
+        return Ok(()); // EOF
+    }
     let proto: RespProto = serde_json::from_slice(resp.as_slice())?;
-    eprintln!("got response: {:?}", proto);
-    Ok(())
+    match proto {
+        RespProto::OK(Some(mut v)) => {
+            println!("{}", v);
+            Ok(())
+        },
+        RespProto::OK(None) => {
+            println!("Key not found");
+            Ok(())
+        },
+        RespProto::Error(err) => {
+            eprintln!("{}", err);
+            Err(KvError::KeyNotFound)
+        },
+    }
 }
