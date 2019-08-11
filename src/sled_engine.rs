@@ -28,6 +28,13 @@ impl Drop for SledStore {
 
 impl SledStore {
     ///
+    /// init with a sled DB
+    ///
+    pub fn new(db: Db) -> Self {
+        SledStore { db }
+    }
+
+    ///
     /// return initialized KvStore
     ///
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {

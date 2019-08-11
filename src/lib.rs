@@ -29,3 +29,4 @@ pub mod kvs_engine;
 pub use engine::KvsEngine;
 pub use engine::Result;
 pub use kvs_engine::KvStore;
+pub use sled_engine::SledStore;
