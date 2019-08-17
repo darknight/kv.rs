@@ -24,6 +24,8 @@ pub mod engine;
 pub mod sled_engine;
 /// kvs engine;
 pub mod kvs_engine;
+/// thread pool
+pub mod thread_pool;
 
 /// re-export
 pub use engine::KvsEngine;
