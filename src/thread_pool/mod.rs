@@ -11,10 +11,13 @@ pub trait ThreadPool {
 
 /// naive threadpool
 pub mod naive_threadpool;
-/// shared queue threadpool;
+/// shared queue threadpool
 pub mod shared_queue_threadpool;
+/// rayon threadpool;
+pub mod rayon_threadpool;
 
 /// re-export
 pub use naive_threadpool::NaiveThreadPool;
 pub use shared_queue_threadpool::SharedQueueThreadPool;
+pub use rayon_threadpool::RayonThreadPool;
 

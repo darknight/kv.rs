@@ -58,6 +58,7 @@ slog-term = "2.4.1"
 sled = "0.24.1"
 criterion = "0.2.11"
 rand = "0.6.5"
+rayon = '1.1.0'
 
 [dev-dependencies]
 assert_cmd = "0.11"
