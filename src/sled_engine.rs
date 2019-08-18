@@ -9,6 +9,7 @@ use super::engine::{Result, KvsEngine, KvError};
 const DEFAULT_PATH: &'static str = "./database";
 
 /// Wrapper for sled Db struct
+#[derive(Clone)]
 pub struct SledStore {
     db: Db,
 }
@@ -66,7 +67,7 @@ impl SledStore {
 
 impl KvsEngine for SledStore {
 
-    fn set(&mut self, key: String, value: String) -> Result<()> {
+    fn set(&self, key: String, value: String) -> Result<()> {
         let res = self.db.set(key, IVec::from(value.as_bytes()));
         match res {
             Ok(_) => Ok(()),
@@ -74,7 +75,7 @@ impl KvsEngine for SledStore {
         }
     }
 
-    fn get(&mut self, key: String) -> Result<Option<String>> {
+    fn get(&self, key: String) -> Result<Option<String>> {
         let res = self.db.get(key);
         match res {
             Ok(None) => Ok(None),
@@ -85,7 +86,7 @@ impl KvsEngine for SledStore {
         }
     }
 
-    fn remove(&mut self, key: String) -> Result<()> {
+    fn remove(&self, key: String) -> Result<()> {
         match self.db.del(key) {
             Ok(Some(_)) => {
                 self.db.flush(); // FIXME: temporarily call flush here to make test pass

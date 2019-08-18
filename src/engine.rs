@@ -1,5 +1,6 @@
 use std::io;
 use std::result;
+use std::sync::{RwLock, RwLockReadGuard};
 
 ///
 /// define customized error type
@@ -23,6 +24,8 @@ pub enum KvError {
     InvalidIpAddr(std::net::AddrParseError),
     /// wrapper of sled engine error
     SledError(sled::Error),
+    /// error when acquire RwLock
+    LockError
 }
 
 impl From<io::Error> for KvError {
@@ -55,21 +58,21 @@ pub type Result<T> = result::Result<T, KvError>;
 ///
 /// defines the storage interface called by KvsServer
 ///
-pub trait KvsEngine {
+pub trait KvsEngine: Clone + Send + 'static {
 
     ///
     /// Set the value of a string key to a string.
     /// Return an error if the value is not written successfully.
     ///
-    fn set(&mut self, key: String, value: String) -> Result<()>;
+    fn set(&self, key: String, value: String) -> Result<()>;
     ///
     /// Get the string value of a string key. If the key does not exist, return None.
     /// Return an error if the value is not read successfully.
     ///
-    fn get(&mut self, key: String) -> Result<Option<String>>;
+    fn get(&self, key: String) -> Result<Option<String>>;
     ///
     /// Remove a given string key.
     /// Return an error if the key does not exit or value is not read successfully.
     ///
-    fn remove(&mut self, key: String) -> Result<()>;
+    fn remove(&self, key: String) -> Result<()>;
 }

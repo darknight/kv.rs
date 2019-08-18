@@ -11,6 +11,7 @@ use std::error::Error;
 use serde::{Serialize, Deserialize};
 
 use super::engine::{Result, KvsEngine, KvError};
+use std::sync::{Arc, RwLock};
 
 /// default log file
 const DEFAULT_PATH: &'static str = "./database";
@@ -28,13 +29,12 @@ enum LogEntry {
 }
 
 ///
-/// core data structure for saving key/value pair
+/// wrap Store with Arc & RwLock to make it share on multiple thread
+/// but with mutation support
 ///
+#[derive(Clone)]
 pub struct KvStore {
-    data: HashMap<String, u64>,
-    path_buf: PathBuf,
-    log_file: File,
-    current_offset: u64,
+    store: Arc<RwLock<Store>>,
 }
 
 impl Default for KvStore {
@@ -43,7 +43,34 @@ impl Default for KvStore {
     }
 }
 
-impl Drop for KvStore {
+///
+/// implement KvStore
+///
+impl KvStore {
+
+    ///
+    /// return initialized KvStore
+    ///
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let store = Store::open(path)?;
+        Ok(KvStore {
+            store: Arc::new(RwLock::new(store))
+        })
+    }
+
+}
+
+///
+/// core data structure for saving key/value pair
+///
+pub struct Store {
+    data: HashMap<String, u64>,
+    path_buf: PathBuf,
+    log_file: File,
+    current_offset: u64,
+}
+
+impl Drop for Store {
     fn drop(&mut self) {
         self.log_file.flush().expect("Fail to drop KvStore before flush data")
     }
@@ -52,12 +79,32 @@ impl Drop for KvStore {
 ///
 /// implementation of KvStore
 ///
-impl KvStore {
+impl Store {
+
+    ///
+    /// internal get
+    ///
+    fn get_internal(&mut self, k: String) -> Result<Option<String>> {
+        match self.data.get(&k) {
+            None => Ok(None),
+            Some(&offset) => {
+                self.log_file.seek(SeekFrom::Start(offset))?;
+                let mut buf_reader = BufReader::new(&self.log_file);
+                let mut raw = String::new();
+                buf_reader.read_line(&mut raw)?;
+                if let LogEntry::Set { key, value} = serde_json::from_str(raw.as_str())? {
+                    Ok(Some(value))
+                } else {
+                    Err(KvError::KeyNotFound)
+                }
+            }
+        }
+    }
 
     ///
     /// internal set without compaction
     ///
-    pub fn set_internal(&mut self, k: String, v: String) -> Result<()> {
+    fn set_internal(&mut self, k: String, v: String) -> Result<()> {
         // create log entry, serialize, write to log file
         let entry = LogEntry::Set {
             key: k.clone(),
@@ -91,7 +138,7 @@ impl KvStore {
     }
 
     ///
-    /// return initialized KvStore
+    /// return initialized Store
     ///
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let p = Self::ensure_path(path.as_ref(), LOG_FILE)?;
@@ -103,7 +150,7 @@ impl KvStore {
     ///
     fn open_internal(file_path: PathBuf) -> Result<Self> {
         let file = Self::open_file(&file_path)?;
-        let mut kv_store = KvStore {
+        let mut kv_store = Store {
             data: HashMap::new(),
             path_buf: file_path,
             log_file: file,
@@ -210,10 +257,10 @@ impl KvStore {
         tmp_file_name.push(".tmp");
         let tmp_file_path = self.path_buf.clone().parent().unwrap().join(tmp_file_name);
 
-        let mut temp_kv_store = KvStore::open_internal(tmp_file_path.clone())?;
+        let mut temp_kv_store = Self::open_internal(tmp_file_path.clone())?;
         let keys: Vec<String> = self.data.keys().map(|k| k.to_string()).collect();
         for key in keys {
-            let value_opt = self.get(key.to_string())?;
+            let value_opt = self.get_internal(key.to_string())?;
             let value = value_opt
                 .expect(&format!("Key {:?} not found when doing compaction", key));
             temp_kv_store.set_internal(key.to_string(), value)?;
@@ -230,27 +277,31 @@ impl KvsEngine for KvStore {
     ///
     /// save key/value pair
     ///
-    fn set(&mut self, k: String, v: String) -> Result<()> {
+    fn set(&self, k: String, v: String) -> Result<()> {
 //        self.check_and_do_compaction()?;
-        self.set_internal(k, v)
+        match self.store.write() {
+            Ok(mut guard) => {
+                guard.set_internal(k, v)
+            },
+            // TODO: propagate PoisonError
+            Err(_) => {
+                Err(KvError::LockError)
+            }
+        }
     }
 
     ///
     /// get value by key
     ///
-    fn get(&mut self, k: String) -> Result<Option<String>> {
-        match self.data.get(&k) {
-            None => Ok(None),
-            Some(&offset) => {
-                self.log_file.seek(SeekFrom::Start(offset))?;
-                let mut buf_reader = BufReader::new(&self.log_file);
-                let mut raw = String::new();
-                buf_reader.read_line(&mut raw)?;
-                if let LogEntry::Set { key, value} = serde_json::from_str(raw.as_str())? {
-                    Ok(Some(value))
-                } else {
-                    Err(KvError::KeyNotFound)
-                }
+    fn get(&self, k: String) -> Result<Option<String>> {
+        // TODO: change to `read`, blocked by `seek` internally
+        match self.store.write() {
+            Ok(mut guard) => {
+                guard.get_internal(k)
+            },
+            // TODO: propagate PoisonError
+            Err(_) => {
+                Err(KvError::LockError)
             }
         }
     }
@@ -258,9 +309,17 @@ impl KvsEngine for KvStore {
     ///
     /// remove key/value pair from KvStore
     ///
-    fn remove(&mut self, k: String) -> Result<()> {
+    fn remove(&self, k: String) -> Result<()> {
 //        self.check_and_do_compaction()?;
-        self.remove_internal(k)
+        match self.store.write() {
+            Ok(mut guard) => {
+                guard.remove_internal(k)
+            },
+            // TODO: propagate PoisonError
+            Err(_) => {
+                Err(KvError::LockError)
+            }
+        }
     }
 
 }

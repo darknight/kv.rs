@@ -63,8 +63,24 @@ fn main() -> Result<()> {
     info!(logger, "storage engine `{}`, listen on `{}`...", engine_name, addr);
 
     info!(logger, "initializing storage engine");
-    let mut engine = init_storage_engine(engine_name, &logger);
+    match engine_name {
+        "kvs" => {
+            let store = KvStore::default();
+            run_with(store, addr, &logger)?;
+        },
+        "sled" => {
+            let store = SledStore::default();
+            run_with(store, addr, &logger)?;
+        },
+        _ => {
+            error!(logger, "Unrecognized storage engine: `{}`", engine_name);
+            exit(1);
+        }
+    }
+    Ok(())
+}
 
+fn run_with(engine: impl KvsEngine, addr: SocketAddr, logger: &Logger) -> Result<()> {
     let listener = TcpListener::bind(addr)?;
     loop {
         match listener.accept() {
@@ -96,24 +112,6 @@ fn main() -> Result<()> {
                 }
             },
             Err(e) => error!(logger, "couldn't get remote stream: {:?}", e),
-        }
-    }
-    Ok(())
-}
-
-fn init_storage_engine(engine_name: &str, logger: &Logger) -> Box<dyn KvsEngine> {
-    match engine_name {
-        "kvs" => {
-            let store = KvStore::default();
-            Box::new(store)
-        },
-        "sled" => {
-            let store = SledStore::default();
-            Box::new(store)
-        },
-        _ => {
-            error!(logger, "Unrecognized storage engine: `{}`", engine_name);
-            exit(1);
         }
     }
 }
