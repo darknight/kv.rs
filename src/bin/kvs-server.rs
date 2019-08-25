@@ -11,10 +11,14 @@ use std::io::Read;
 use std::io::Write;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::thread;
 use kvs::proto::{ReqProto, RespProto};
 use kvs::engine::{KvError, Result, KvsEngine};
 use kvs::kvs_engine::KvStore;
 use kvs::sled_engine::SledStore;
+use kvs::thread_pool::ThreadPool;
+use kvs::thread_pool::SharedQueueThreadPool;
+use std::borrow::BorrowMut;
 
 ///
 /// slog doc: https://docs.rs/slog/2.5.2/slog/
@@ -66,11 +70,13 @@ fn main() -> Result<()> {
     match engine_name {
         "kvs" => {
             let store = KvStore::default();
-            run_with(store, addr, &logger)?;
+            let log = logger.clone();
+            run_with(store, addr, log)?;
         },
         "sled" => {
             let store = SledStore::default();
-            run_with(store, addr, &logger)?;
+            let log = logger.clone();
+            run_with(store, addr, log)?;
         },
         _ => {
             error!(logger, "Unrecognized storage engine: `{}`", engine_name);
@@ -80,40 +86,67 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_with(engine: impl KvsEngine, addr: SocketAddr, logger: &Logger) -> Result<()> {
+fn run_with(engine: impl KvsEngine, addr: SocketAddr, logger: Logger) -> Result<()> {
     let listener = TcpListener::bind(addr)?;
+    // TODO: get cpu count
+    let pool = SharedQueueThreadPool::new(6)?;
     loop {
         match listener.accept() {
             Ok((mut stream, peer_addr)) => {
-                debug!(logger, "accept remote stream from {}", peer_addr);
-                let mut raw = Vec::new();
-                let mut buf_stream = BufReader::new(&stream);
-                buf_stream.read_until(b'\n', &mut raw);
-                let proto: ReqProto = serde_json::from_slice(raw.as_slice())?;
-                debug!(logger, "received command => `{:?}`", proto);
-                match proto {
-                    ReqProto::Get(key) => {
-                        let val_opt = engine.get(key)?;
-                        let resp = RespProto::OK(val_opt);
-                        send_response(&mut stream, resp)?;
-                    },
-                    ReqProto::Set(key, value) => {
-                        engine.set(key, value)?;
-                    },
-                    ReqProto::Remove(key) => {
-                        match engine.remove(key) {
-                            Err(KvError::KeyNotFound) => {
-                                let resp = RespProto::Error("Key not found".to_string());
-                                send_response(&mut stream, resp)?;
-                            },
-                            _ => {}
-                        }
-                    }
-                }
+                debug!(logger, "[Main] accept remote stream from {}", peer_addr);
+                let engine_cp = engine.clone();
+                let logger_cp = logger.clone();
+                // submit job to the thread pool
+                pool.spawn(move || {
+                    let req_proto = deserialize_request(&stream);
+                    debug!(logger_cp, "[{:?}] received command => `{:?}`",
+                           thread::current().id(),
+                           req_proto
+                    );
+                    process_request(engine_cp, logger_cp, req_proto, stream);
+                });
             },
             Err(e) => error!(logger, "couldn't get remote stream: {:?}", e),
         }
     }
+}
+
+fn deserialize_request(stream: &TcpStream) -> Result<ReqProto> {
+    let mut raw = Vec::new();
+    let mut buf_stream = BufReader::new(stream);
+    buf_stream.read_until(b'\n', &mut raw);
+    serde_json::from_slice(raw.as_slice()).map_err(|e| KvError::SerdeJsonError(e))
+}
+
+fn process_request(engine: impl KvsEngine,
+                   logger: Logger,
+                   req: Result<ReqProto>,
+                   mut stream: TcpStream) -> Result<()> {
+    match req {
+        Ok(ReqProto::Get(key)) => {
+            let val_opt = engine.get(key)?;
+            let resp = RespProto::OK(val_opt);
+            send_response(&mut stream, resp)?;
+        },
+        Ok(ReqProto::Set(key, value)) => {
+            engine.set(key, value)?;
+        },
+        Ok(ReqProto::Remove(key)) => {
+            match engine.remove(key) {
+                Err(KvError::KeyNotFound) => {
+                    let resp = RespProto::Error("Key not found".to_string());
+                    send_response(&mut stream, resp)?;
+                },
+                _ => {}
+            }
+        },
+        Err(e) => {
+            error!(logger, "[{:?}] Fail to process request {:?}",
+                   thread::current().id(),
+                   e);
+        },
+    }
+    Ok(())
 }
 
 fn send_response(stream: &mut TcpStream, resp: RespProto) -> Result<()> {
