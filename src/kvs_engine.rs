@@ -7,17 +7,25 @@ use std::io::prelude::*;
 use std::io::{BufReader, SeekFrom};
 use std::ffi::OsString;
 use std::error::Error;
+use std::thread;
 
 use serde::{Serialize, Deserialize};
 
 use super::engine::{Result, KvsEngine, KvError};
 use std::sync::{Arc, RwLock};
+use std::thread::JoinHandle;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 /// default log file
 const DEFAULT_PATH: &'static str = "./database";
 const LOG_FILE: &'static str = "data.log";
 /// max file size (in bytes) before executing compaction or splitting into segments
-const MAX_FILE_BYTES: u64 = 1024 * 1024 ;
+const MAX_FILE_BYTES: u64 = 1024 * 1024;
+/// schedule interval for compaction
+const COMPACTION_INTERVAL: Duration = Duration::from_secs(5);
+/// temporary file for compaction
+const COMPACTION_LOG_FILE: &'static str = "data.log.tmp";
 
 #[derive(Debug, Serialize, Deserialize)]
 enum LogEntry {
@@ -35,6 +43,8 @@ enum LogEntry {
 #[derive(Clone)]
 pub struct KvStore {
     store: Arc<RwLock<Store>>,
+    compact_thread: Arc<JoinHandle<()>>,
+    terminate: Arc<AtomicBool>,
 }
 
 impl Default for KvStore {
@@ -52,9 +62,23 @@ impl KvStore {
     /// return initialized KvStore
     ///
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let store = Store::open(path)?;
+        let inner_store = Store::open(path, LOG_FILE)?;
+        let store = Arc::new(RwLock::new(inner_store));
+        let terminate = Arc::new(AtomicBool::new(false));
+
+        let store_cp = store.clone();
+        let terminate_cp = terminate.clone();
+        let handle = thread::spawn(move || loop {
+            if terminate_cp.load(Ordering::SeqCst) {
+                break;
+            }
+            thread::sleep(COMPACTION_INTERVAL);
+            let res = check_and_do_compaction(store_cp.clone());
+        });
         Ok(KvStore {
-            store: Arc::new(RwLock::new(store))
+            store,
+            compact_thread: Arc::new(handle),
+            terminate,
         })
     }
 
@@ -65,7 +89,7 @@ impl KvStore {
 ///
 pub struct Store {
     data: HashMap<String, u64>,
-    path_buf: PathBuf,
+    dir_path: PathBuf,
     log_file: File,
     current_offset: u64,
 }
@@ -140,19 +164,19 @@ impl Store {
     ///
     /// return initialized Store
     ///
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let p = Self::ensure_path(path.as_ref(), LOG_FILE)?;
-        Self::open_internal(p)
+    pub fn open<P: AsRef<Path>>(dir: P, file_name: &str) -> Result<Self> {
+        let file_path = Self::ensure_path(dir.as_ref(), file_name)?;
+        Self::open_internal(dir, file_path)
     }
 
     ///
     /// pass in valid file path
     ///
-    fn open_internal(file_path: PathBuf) -> Result<Self> {
+    fn open_internal<P: AsRef<Path>>(dir: P, file_path: PathBuf) -> Result<Self> {
         let file = Self::open_file(&file_path)?;
         let mut kv_store = Store {
             data: HashMap::new(),
-            path_buf: file_path,
+            dir_path: PathBuf::from(dir.as_ref()),
             log_file: file,
             current_offset: 0u64,
         };
@@ -230,45 +254,52 @@ impl Store {
         println!("{:?}", self.data);
     }
 
-    ///
-    /// check file size and do compaction if file is too large
-    /// the strategy currently is blocking set & remove until compaction is completed
-    /// action:
-    /// 1. create temp KvStore with opening TEMP_LOG_FILE
-    /// 2. dump data in current KvStore to temp KvStore
-    /// 3. drop temp KvStore
-    /// 4. overwrite original file with temp file by renaming
-    /// 5. create new file handle for the new file, assign it to current KvStore
-    /// 6. return
-    ///
-    /// TODO: handle stale temp file if compaction fails in the middle
-    ///
-    /// FIXME: compaction is not working well for benchmark tests
-    ///
-    fn check_and_do_compaction(&mut self) -> Result<()> {
-        let metadata = self.log_file.metadata()?;
-        if metadata.len() < MAX_FILE_BYTES {
-            return Ok(());
-        }
-        // path_buf is guaranteed as a file
-        let file_name = self.path_buf.file_name().unwrap();
-        let mut tmp_file_name = OsString::new();
-        tmp_file_name.push(file_name);
-        tmp_file_name.push(".tmp");
-        let tmp_file_path = self.path_buf.clone().parent().unwrap().join(tmp_file_name);
+}
 
-        let mut temp_kv_store = Self::open_internal(tmp_file_path.clone())?;
-        let keys: Vec<String> = self.data.keys().map(|k| k.to_string()).collect();
-        for key in keys {
-            let value_opt = self.get_internal(key.to_string())?;
-            let value = value_opt
-                .expect(&format!("Key {:?} not found when doing compaction", key));
-            temp_kv_store.set_internal(key.to_string(), value)?;
+///
+/// check file size and do compaction if file is too large in a separate thread
+/// action:
+/// - create temp KvStore with opening COMPACTION_LOG_FILE
+/// - dump data in current KvStore to temp KvStore
+/// - overwrite original file with temp file by renaming
+/// - create new file handle for the new file, assign it to current KvStore
+/// - drop temp KvStore
+/// - return
+///
+/// TODO: handle stale temp file if compaction fails in the middle
+///
+fn check_and_do_compaction(store: Arc<RwLock<Store>>) -> Result<()> {
+    match store.write() {
+        Ok(mut guard) => {
+            let metadata = guard.log_file.metadata()?;
+            if metadata.len() < MAX_FILE_BYTES {
+                return Ok(());
+            }
+
+            let mut tmp_store = Store::open(
+                &guard.dir_path,
+                COMPACTION_LOG_FILE
+            )?;
+
+            let keys: Vec<String> = guard.data.keys().map(|k| k.to_string()).collect();
+            for key in keys {
+                let value_opt = guard.get_internal(key.to_string())?;
+                // FIXME: `expect` will compromise current thread
+                let value = value_opt
+                    .expect(&format!("Key {:?} not found when doing compaction", key));
+                tmp_store.set_internal(key, value)?;
+            }
+
+            fs::rename(tmp_store.dir_path.join(COMPACTION_LOG_FILE),
+                       guard.dir_path.join(LOG_FILE))?;
+            guard.log_file = tmp_store.log_file.try_clone()?;
+
+            drop(tmp_store);
+            Ok(())
+        },
+        Err(_) => {
+            Err(KvError::LockError)
         }
-        drop(temp_kv_store);
-        fs::rename(tmp_file_path.as_path(), self.path_buf.as_path())?;
-        self.log_file = Self::open_file(self.path_buf.as_path())?;
-        Ok(())
     }
 }
 
@@ -278,7 +309,6 @@ impl KvsEngine for KvStore {
     /// save key/value pair
     ///
     fn set(&self, k: String, v: String) -> Result<()> {
-//        self.check_and_do_compaction()?;
         match self.store.write() {
             Ok(mut guard) => {
                 guard.set_internal(k, v)
@@ -310,7 +340,6 @@ impl KvsEngine for KvStore {
     /// remove key/value pair from KvStore
     ///
     fn remove(&self, k: String) -> Result<()> {
-//        self.check_and_do_compaction()?;
         match self.store.write() {
             Ok(mut guard) => {
                 guard.remove_internal(k)
