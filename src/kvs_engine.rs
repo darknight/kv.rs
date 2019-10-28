@@ -303,6 +303,7 @@ fn check_and_do_compaction(store: Arc<RwLock<Store>>) -> Result<()> {
     }
 }
 
+// TODO: implement lock-free read
 impl KvsEngine for KvStore {
 
     ///
